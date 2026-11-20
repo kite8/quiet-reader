@@ -30,6 +30,7 @@ jobs:
           python3 build.py
           node --check dist/quiet-reader.user.js
           node tests/automation_unit.cjs
+          node tests/reader_unit.cjs
           python3 build.py --check
       - name: Prepare isolated browser tests
         run: |
@@ -41,6 +42,11 @@ jobs:
         run: .venv/bin/python tests/browser_smoke.py
       - name: Publish verified release files
         run: |
+          git fetch origin main
+          if ! git diff --quiet HEAD origin/main -- src tests build.py VERSION LICENSE .github/workflows/build.yml; then
+            echo "Source changed during verification; the newer run will publish."
+            exit 1
+          fi
           mkdir -p docs
           cp qa/panel-desktop.png docs/panel-desktop.png
           cp qa/panel-mobile.png docs/panel-mobile.png
@@ -53,4 +59,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "build: publish verified userscript [skip ci]"
+          git rebase origin/main
           git push origin HEAD:main
