@@ -212,8 +212,11 @@ async def test_automatic(browser):
     await page.wait_for_function("__qr.reader.getCurrent()?.ready")
     assert await page.evaluate("__qr.reader.getCurrent().automatic") is True
     before = await page.evaluate("window.scrollY")
-    await advance(page, 6500)
-    assert await page.evaluate("__qr.reader.getCurrent().body.scrollTop") > 0
+    # Sample while the first topic is still being read; a later topic legitimately
+    # starts at scrollTop=0 once automatic next has already run.
+    await advance(page, 2000)
+    geometry = await page.evaluate("({state:__qr.automation.getState(), top:__qr.reader.getCurrent().body.scrollTop, height:__qr.reader.getCurrent().body.clientHeight, content:__qr.reader.getCurrent().body.scrollHeight})")
+    assert geometry["top"] > 0, geometry
     assert await page.evaluate("window.scrollY") == before
     await page.evaluate("__qr.automation.pause()")
     assert (await current(page))["state"] == "paused"
