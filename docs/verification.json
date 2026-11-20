@@ -1,0 +1,10 @@
+{
+  "passed": [
+    "test_panel",
+    "test_automatic",
+    "test_stop_and_errors",
+    "test_tracking_and_visibility",
+    "test_schedule"
+  ],
+  "network": "all routes mocked; no real site requests"
+}
