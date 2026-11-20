@@ -22,64 +22,127 @@ const footerCode = extract('  function patchCoreLike(', '  function updateCommen
 const automaticLikeCode = extract('      async likePost(postId) {', "      close(reason = 'user')")
   .trim().replace(/^async /, 'async function ').replace(/,\s*$/, '');
 const readCode = extract('    function loadMore() {', '\n\n    try {\n      const results = await Promise.all');
+const reactionCode = extract('  async function toggleReaction(', '  function reactionPanelHtml(');
+const reactionUiCode = extract('  function updatePostReactions(', '  /* ============ 2.6.2');
+const findPostCode = extract('  function findPostForNode(', '  function findPollForNode(');
+const actionsCode = extract('  function bindActions(', '  /* ============ 12.');
 const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
 
-async function testLikeStateAndLock() {
-  const requests = [];
-  let finishRequest;
-  const post = {
-    id: 10101, post_number: 1,
-    actions_summary: [{ id: 2, count: 0, can_act: true, acted: false }],
-  };
-  const button = {
-    disabled: false,
-    classList: { toggle() {} },
-    querySelector() { return {}; },
-    addEventListener(name, callback) {
-      assert.equal(name, 'click');
-      this.clickHandler = callback;
-    },
-  };
-  const count = { textContent: '0' };
-  const controller = new AbortController();
+function createLikeContext(number = 1) {
+  const requests = [], alerts = [], floorCount = { textContent: 0 }, footerCount = { textContent: 0 };
+  let finishRequest, rejectRequest, onClick;
+  const post = { id: 10100 + number, post_number: number,
+    actions_summary: [{ id: 2, count: 0, can_act: true, acted: false }] };
+  const button = (count) => ({
+    disabled: false, dataset: { acted: '0' }, classList: { toggle() {} },
+    querySelector: (selector) => selector === '.ldp-like-count' ? count : {},
+    addEventListener(name, callback) { if (name === 'click') this.clickHandler = callback; },
+  });
+  const floor = button(floorCount), footer = button(footerCount), reaction = button({});
+  reaction.getAttribute = () => 'smile';
+  const overlay = { querySelector: (selector) => selector === '.ldp-f-like' ? footer : footerCount };
+  const node = { dataset: { postId: String(post.id), postNumber: String(number) },
+    querySelector: (selector) => selector === '.ldp-like' ? floor : null,
+    closest: (selector) => selector === '.ldp-overlay' ? overlay : null };
+  const signal = new AbortController().signal;
   const context = {
     BASE: 'https://fixture.invalid', ICONS: { like: '' },
-    LDR: { settings: { get: () => true } },
-    ctx: {
-      postMap: new Map([[1, post]]), nodeMap: new Map(),
-      signal: controller.signal, assertActive() {},
-    },
-    signal: controller.signal,
-    overlay: { querySelector(selector) { return selector === '.ldp-f-like' ? button : count; } },
-    updatePostReactions() {},
+    LDR: { settings: { get: () => true } }, idToPost: new Map(),
+    ctx: { postMap: new Map([[number, post]]), nodeMap: new Map([[number, node]]), signal, assertActive() {} },
+    signal, overlay, renderReactions: () => '', refreshEmojiUrls() {},
+    reactionImgHtml: () => '', closeReactionPanel() {}, alert: (message) => alerts.push(message),
     async apiSend(url, method) {
       requests.push(method);
-      if (requests.length === 1) await new Promise((resolve) => { finishRequest = resolve; });
-      return {};
+      if (requests.length === 1) return new Promise((resolve, reject) => { finishRequest = resolve; rejectRequest = reject; });
+      return context.reply || {};
     },
-    alert(message) { throw new Error(message); },
   };
   vm.createContext(context);
   vm.runInContext(`${likeHelpers}\n${footerCode}\n${automaticLikeCode}
-    this.bind = bindFooterLike; this.like = likePost;`, context);
-  context.bind(button, count, post, context.ctx);
+    ${reactionCode}\n${reactionUiCode}\n${findPostCode}\n${actionsCode}
+    this.bind = bindFooterLike; this.like = likePost; this.bindActions = bindActions;`, context);
+  if (number === 1) context.bind(footer, footerCount, post, context.ctx);
+  context.bindActions({ addEventListener(name, callback) { if (name === 'click') onClick = callback; } }, context.ctx);
+  return { context, post, floor, footer, floorCount, footerCount, requests, alerts,
+    finish: (response = {}) => finishRequest(response), fail: () => rejectRequest(new Error('fixture failure')),
+    click: (kind) => onClick({ target: { closest(selector) {
+      if (selector === '.ldp-post') return node;
+      if (selector === '.ldp-like' && kind === 'core') return floor;
+      if (selector === '.ldp-reaction' && kind === 'reaction') return reaction;
+      return null;
+    } }, preventDefault() {}, stopPropagation() {} }),
+  };
+}
 
-  const inFlight = context.like(post.id);
-  assert.equal(button.disabled, true, 'Automatic requests disable the footer');
-  assert.equal(post._qrLikePending, true);
-  await button.clickHandler(); // Also test a synthetic click that bypasses native disabled behavior.
-  assert.deepEqual(requests, ['POST'], 'The footer cannot submit during an automatic request');
-  finishRequest();
+async function testLikeStateAndLock() {
+  const f = createLikeContext();
+  const inFlight = f.context.like(f.post.id);
+  assert.equal(f.footer.disabled, true);
+  await f.footer.clickHandler(); // Synthetic click bypasses native disabled behavior.
+  assert.deepEqual(f.requests, ['POST']);
+  f.finish();
   assert.equal(await inFlight, true);
-  assert.equal(count.textContent, 1);
-  assert.equal(button.disabled, false);
-  assert.equal(post._qrLikePending, undefined);
+  assert.equal(f.footerCount.textContent, 1);
+  assert.equal(f.footer.disabled, false);
+  await f.footer.clickHandler();
+  assert.deepEqual(f.requests, ['POST', 'DELETE'], 'The footer reads the current liked state');
+  assert.equal(f.footerCount.textContent, 0);
+  assert.equal(f.post.actions_summary[0].count, 0);
+}
 
-  await button.clickHandler();
-  assert.deepEqual(requests, ['POST', 'DELETE'], 'The footer reads the new liked state');
-  assert.equal(count.textContent, 0);
-  assert.equal(post.actions_summary[0].count, 0);
-  assert.equal(post.actions_summary[0].acted, false);
+async function testAutomaticBlocksFloorCore() {
+  const f = createLikeContext(2);
+  const inFlight = f.context.like(f.post.id);
+  assert.equal(f.floor.disabled, false, 'Exercise the model lock even when a stale button is enabled');
+  await f.click('core');
+  assert.deepEqual(f.requests, ['POST'], 'A manual reply like cannot race an automatic like');
+  f.finish(); await inFlight;
+  assert.equal(f.floorCount.textContent, 1);
+  assert.equal(f.post.actions_summary[0].count, 1);
+  assert.equal(f.post._qrLikePending, undefined);
+}
+
+async function testFloorCoreBlocksAutomatic() {
+  const f = createLikeContext(2);
+  const inFlight = f.click('core');
+  assert.equal(await f.context.like(f.post.id), false);
+  assert.deepEqual(f.requests, ['POST'], 'Automatic likes cannot race a manual reply like');
+  f.finish(); await inFlight;
+  assert.equal(f.floorCount.textContent, 1);
+  assert.equal(f.floor.dataset.acted, '1');
+  assert.equal(f.floor.disabled, false);
+  assert.equal(f.post._qrLikePending, undefined);
+}
+
+async function testCustomReactionSharesLockWithoutFooterReentry() {
+  const f = createLikeContext();
+  const inFlight = f.click('reaction');
+  assert.equal(await f.context.like(f.post.id), false);
+  await f.click('core'); await f.footer.clickHandler();
+  assert.deepEqual(f.requests, ['PUT'], 'All other entry points respect a pending custom reaction');
+  f.finish({ current_user_reaction: { id: 'smile' }, reactions: [{ id: 'smile', count: 1 }] });
+  await inFlight;
+  assert.equal(f.floorCount.textContent, 1);
+  assert.equal(f.footerCount.textContent, 1);
+  f.context.reply = { current_user_reaction: null, reactions: [] };
+  await f.footer.clickHandler();
+  assert.deepEqual(f.requests, ['PUT', 'PUT'], 'The footer delegates before acquiring the reaction lock');
+  assert.equal(f.post._qrLikePending, undefined);
+  assert.equal(f.footer.disabled, false);
+  assert.equal(f.footerCount.textContent, 0);
+}
+
+async function testReactionLocksReleaseAfterFailure() {
+  for (const entry of ['auto', 'core', 'reaction', 'footer']) {
+    const f = createLikeContext();
+    const inFlight = entry === 'auto' ? f.context.like(f.post.id)
+      : entry === 'footer' ? f.footer.clickHandler() : f.click(entry);
+    f.fail(); await inFlight.catch(() => {});
+    assert.equal(f.post._qrLikePending, undefined, `${entry} releases its lock`);
+    assert.equal(f.floor.disabled, false);
+    assert.equal(f.footer.disabled, false);
+    assert.equal(f.post.actions_summary[0].count, 0);
+  }
 }
 
 function makeNode(number) {
@@ -187,7 +250,9 @@ async function testEarlierExpandedContentIsRevisited() {
 }
 
 (async () => {
-  for (const test of [testLikeStateAndLock, testNavigationWaitsForPagination, testEarlierExpandedContentIsRevisited]) {
+  for (const test of [testLikeStateAndLock, testAutomaticBlocksFloorCore, testFloorCoreBlocksAutomatic,
+    testCustomReactionSharesLockWithoutFooterReentry, testReactionLocksReleaseAfterFailure,
+    testNavigationWaitsForPagination, testEarlierExpandedContentIsRevisited]) {
     await test();
     console.log(`PASS ${test.name}`);
   }
