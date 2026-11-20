@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+qa/
+reference/
+WORKPLAN.md
+.DS_Store
