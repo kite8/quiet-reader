@@ -1,0 +1,22 @@
+Quiet Reader
+
+The popup reader is adapted from:
+  fashionzzZ/linuxdo-read-script
+  https://github.com/fashionzzZ/linuxdo-read-script
+  Original file: LinuxDo 增强阅读.user.js
+  Original version: 2.0.0
+  Source revision: 7e7f53ab7a25f454f65bfafdefc3d5b1f7972800
+  Copyright (c) 2026 Fashion
+  License: MIT (see LICENSE)
+
+Modifications include a configurable control panel, feature gates, cancellable
+reader sessions, sequential popup browsing, optional automatic scrolling,
+optional likes, explicit pause/stop controls, and update metadata.
+
+The control-panel and automation modules are newly implemented for this project.
+The external automation scripts discussed during development were reviewed for
+behavioral requirements; their automation code is not bundled in this release.
+
+Some optional media/math features inherited from the reader load third-party
+assets at runtime. Those assets are not distributed by this repository and
+retain their respective licenses.
