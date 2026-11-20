@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Quiet Reader · 阅读控制台
 // @namespace    https://github.com/kite8/quiet-reader
-// @version      2.1.0
+// @version      2.1.1
 // @description  弹窗阅读、独立功能开关与可暂停的连续浏览。
 // @author       Fashion; kite8
 // @license      MIT
@@ -47,7 +47,7 @@ SOFTWARE.
 
   // Quiet Reader: settings, events and isolated control panel.
   const LDR = (() => {
-    const VERSION = '2.1.0';
+    const VERSION = '2.1.1';
     const STORAGE_KEY = 'quiet_reader_settings_v1';
     const defaults = Object.freeze({
       popupEnabled: true, interceptNotifications: true, interceptSearch: true, resumeReading: true,
@@ -1725,23 +1725,30 @@ SOFTWARE.
     const postId = postNode.dataset.postId;
     const postNumber = +postNode.dataset.postNumber;
     const post = findPostForNode(postNode, ctx);
+    if (!post || post._qrLikePending) return null;
+    post._qrLikePending = true;
     if (clickedEl) clickedEl.disabled = true;
     try {
       const updated = await apiSend(
           `${BASE}/discourse-reactions/posts/${postId}/custom-reactions/${encodeURIComponent(name)}/toggle`,
           'PUT', null, null, ctx.signal);
       ctx.assertActive?.();
-      const target = post || updated;
-      if (post) Object.assign(post, updated);
-      if (ctx.postMap) ctx.postMap.set(postNumber, target);
-      idToPost.set(Number(postId), target);
-      updatePostReactions(postNode, target);
-      return target;
+      Object.assign(post, updated);
+      if (ctx.postMap) ctx.postMap.set(postNumber, post);
+      idToPost.set(Number(postId), post);
+      return post;
     } catch (err) {
       if (err.name !== 'AbortError') alert('操作失败：' + err.message);
       return null;
     } finally {
+      delete post._qrLikePending;
       if (clickedEl) clickedEl.disabled = false;
+      updatePostReactions(postNode, post);
+      if (postNumber === 1) {
+        const overlay = postNode.closest('.ldp-overlay');
+        const footer = overlay?.querySelector('.ldp-f-like');
+        if (footer) syncFooterLike(footer, overlay.querySelector('.ldp-f-like-count'), post);
+      }
     }
   }
 
@@ -3509,25 +3516,34 @@ SOFTWARE.
         closeReactionPanel();
         // 已有反应（任意表情）→ 点 ♥ = 取消当前反应；否则沿用 core 点赞开关
         const curPost = findPostForNode(postNode, ctx);
-        const cur = curPost && curPost.current_user_reaction;
+        if (!LDR.settings.get('showReactions') || !curPost || curPost._qrLikePending) return;
+        const cur = curPost.current_user_reaction;
         if (cur && cur.id) { await toggleReaction(postNode, ctx, cur.id, likeBtn); return; }
-        const countEl = likeBtn.querySelector('.ldp-like-count'), acted = likeBtn.dataset.acted === '1';
+        const { acted, canAct } = likeInfo(curPost);
+        if (!acted && !canAct) return;
+        curPost._qrLikePending = true;
         likeBtn.disabled = true;
         try {
           if (!acted) {
-            await apiSend(`${BASE}/post_actions`, 'POST', { id: postId, post_action_type_id: 2, flag_topic: false });
-            if (ctx.signal?.aborted) return;
+            await apiSend(`${BASE}/post_actions`, 'POST', { id: postId, post_action_type_id: 2, flag_topic: false }, null, ctx.signal);
+            ctx.assertActive?.();
             patchCoreLike(curPost, true);
-            likeBtn.classList.add('liked'); likeBtn.dataset.acted = '1';
-            countEl.textContent = (+countEl.textContent) + 1;
           } else {
-            await apiSend(`${BASE}/post_actions/${postId}?post_action_type_id=2`, 'DELETE');
-            if (ctx.signal?.aborted) return;
+            await apiSend(`${BASE}/post_actions/${postId}?post_action_type_id=2`, 'DELETE', null, null, ctx.signal);
+            ctx.assertActive?.();
             patchCoreLike(curPost, false);
-            likeBtn.classList.remove('liked'); likeBtn.dataset.acted = '0';
-            countEl.textContent = Math.max(0, (+countEl.textContent) - 1);
           }
-        } catch (err) { alert('操作失败：' + err.message); } finally { likeBtn.disabled = false; }
+        } catch (err) {
+          if (err.name !== 'AbortError') alert('操作失败：' + err.message);
+        } finally {
+          delete curPost._qrLikePending;
+          updatePostReactions(postNode, curPost);
+          if (postNumber === 1) {
+            const overlay = postNode.closest('.ldp-overlay');
+            const footer = overlay?.querySelector('.ldp-f-like');
+            if (footer) syncFooterLike(footer, overlay.querySelector('.ldp-f-like-count'), curPost);
+          }
+        }
         return;
       }
 
@@ -3816,18 +3832,20 @@ SOFTWARE.
       // The automatic controller and this button share both live state and an in-flight lock.
       const liked = likeActed(post);
       if (!liked && !likeInfo(post).canAct) return;
+      const cur = post.current_user_reaction;
+      const postNode = ctx.nodeMap.get(1);
+      if (cur && cur.id && postNode) {
+        // toggleReaction owns the shared lock; do not acquire it twice here.
+        await toggleReaction(postNode, ctx, cur.id, btn);
+        return;
+      }
       post._qrLikePending = true;
       syncFooterLike(btn, countEl, post);
       try {
-        const cur = post.current_user_reaction;
         if (cur && cur.id) {
-          const postNode = ctx.nodeMap.get(1);
-          if (postNode) await toggleReaction(postNode, ctx, cur.id, btn);
-          else {
-            const updated = await apiSend(`${BASE}/discourse-reactions/posts/${post.id}/custom-reactions/${encodeURIComponent(cur.id)}/toggle`, 'PUT', null, null, ctx.signal);
-            ctx.assertActive?.();
-            Object.assign(post, updated);
-          }
+          const updated = await apiSend(`${BASE}/discourse-reactions/posts/${post.id}/custom-reactions/${encodeURIComponent(cur.id)}/toggle`, 'PUT', null, null, ctx.signal);
+          ctx.assertActive?.();
+          Object.assign(post, updated);
         } else if (!liked) {
           await apiSend(`${BASE}/post_actions`, 'POST', { id: post.id, post_action_type_id: 2, flag_topic: false }, null, ctx.signal);
           ctx.assertActive?.();
